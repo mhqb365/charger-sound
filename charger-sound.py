@@ -10,6 +10,13 @@ import sys
 from tkinter import filedialog
 import winreg
 import webbrowser
+from PIL import Image, ImageDraw, ImageFont, ImageTk
+try:
+    import pystray
+    from pystray import MenuItem as item
+    HAS_PYSTRAY = True
+except ImportError:
+    HAS_PYSTRAY = False
 
 # Xác định thư mục cơ sở (hỗ trợ cả exe và script)
 if getattr(sys, 'frozen', False):
@@ -27,9 +34,11 @@ def set_startup(enabled):
         if enabled:
             if getattr(sys, 'frozen', False):
                 exe_path = sys.executable
+                full_command = f'"{exe_path}" --minimized'
             else:
                 exe_path = os.path.abspath(__file__)
-            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                full_command = f'"{sys.executable}" "{exe_path}" --minimized'
+            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, full_command)
         else:
             try:
                 winreg.DeleteValue(key, app_name)
@@ -67,7 +76,9 @@ TRANSLATIONS = {
         "plugged_log": "🔌 Plugged in",
         "unplugged_log": "🔋 On battery",
         "enabled_label": "Enable",
-        "startup_label": "Run at Startup"
+        "startup_label": "Run at Startup",
+        "tray_show": "Show Window",
+        "tray_exit": "Exit"
     },
     "vi": {
         "window_title": "Cấu hình Âm thanh Sạc Pin",
@@ -84,7 +95,9 @@ TRANSLATIONS = {
         "plugged_log": "🔌 Đã kết nối sạc",
         "unplugged_log": "🔋 Đã ngắt sạc",
         "enabled_label": "Kích hoạt",
-        "startup_label": "Khởi động cùng Windows"
+        "startup_label": "Khởi động cùng Windows",
+        "tray_show": "Hiện cửa sổ",
+        "tray_exit": "Thoát"
     }
 }
 
@@ -195,11 +208,10 @@ def get_wav_list():
         return []
     return [f for f in os.listdir(wav_dir) if f.lower().endswith(".wav")]
 
-from PIL import Image, ImageDraw, ImageFont, ImageTk
-
 class ChargeSoundApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        self.tray_icon = None
         
         # UI Elements dictionary for easy text update
         self.ui_elements = {}
@@ -208,25 +220,85 @@ class ChargeSoundApp(ctk.CTk):
         self.set_icon("🔋")
         self.update_translations()
 
-    def set_icon(self, emoji):
-        try:
-            # Create a 64x64 image
-            img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-            
-            # Use Windows Emoji Font
+        # Xử lý đóng cửa sổ và khởi động thu nhỏ
+        self.protocol("WM_DELETE_WINDOW", self.hide_window)
+        if "--minimized" in sys.argv:
+            self.after(150, self.withdraw)
+
+    def get_icon_image(self, emoji):
+        # Kiểm tra đường dẫn icon khi chạy file .exe (thư mục tạm của PyInstaller)
+        bundle_dir = getattr(sys, '_MEIPASS', BASE_DIR)
+        icon_path = os.path.join(bundle_dir, "icon.png")
+        
+        # Nếu không thấy ở thư mục tạm, tìm ở thư mục chứa file .exe
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(BASE_DIR, "icon.png")
+
+        if os.path.exists(icon_path):
             try:
-                font = ImageFont.truetype("seguiemj.ttf", 48)
+                return Image.open(icon_path).resize((64, 64))
+            except:
+                pass
+                
+        try:
+            # Tạo icon với nền màu xanh (không để trong suốt để tránh bị "tàng hình")
+            img = Image.new('RGBA', (64, 64), (59, 142, 208, 255))
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("seguiemj.ttf", 40)
             except:
                 font = ImageFont.load_default()
-                
-            draw.text((32, 32), emoji, font=font, anchor="mm")
             
+            # Vẽ emoji màu trắng lên nền xanh
+            draw.text((32, 32), emoji, font=font, anchor="mm", fill="white")
+            return img
+        except:
+            return Image.new('RGBA', (64, 64), (59, 142, 208, 255))
+
+    def set_icon(self, emoji):
+        try:
+            img = self.get_icon_image(emoji)
             photo = ImageTk.PhotoImage(img)
             self.iconphoto(True, photo)
-            self._icon_ref = photo # Keep reference
+            self._icon_ref = photo
         except Exception as e:
             print(f"Icon error: {e}")
+
+    def setup_tray(self):
+        if not HAS_PYSTRAY:
+            print("Pystray not found - Tray icon disabled")
+            return
+            
+        print("Initializing Tray Icon...")
+        def on_show(icon, item):
+            self.show_window()
+
+        def on_exit(icon, item):
+            self.quit_app()
+
+        menu = pystray.Menu(
+            item(lambda t: TRANSLATIONS[settings["language"]]["tray_show"], on_show, default=True),
+            item(lambda t: TRANSLATIONS[settings["language"]]["about_name"], lambda: self.open_github()),
+            pystray.Menu.SEPARATOR,
+            item(lambda t: TRANSLATIONS[settings["language"]]["tray_exit"], on_exit)
+        )
+        
+        self.tray_icon = pystray.Icon("ChargerSound", self.get_icon_image("🔋"), "Charger Sound", menu)
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def hide_window(self):
+        self.withdraw()
+
+    def show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def quit_app(self):
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.destroy()
+        os._exit(0)
 
     def setup_ui(self):
         self.geometry("480x380")
@@ -309,6 +381,7 @@ class ChargeSoundApp(ctk.CTk):
             "unplugged_enabled",
             "#e67e22"
         )
+        self.setup_tray()
 
     def open_github(self):
         webbrowser.open_new_tab("https://github.com/mhqb365/charger-sound")

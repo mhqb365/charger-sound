@@ -1,7 +1,7 @@
 {
     "plugged_sound": "wav/ahh.wav",
     "unplugged_sound": "wav/uhh.wav",
-    "language": "en",
+    "language": "vi",
     "plugged_enabled": 1,
     "unplugged_enabled": 1
 }
