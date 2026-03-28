@@ -24,7 +24,7 @@ Một ứng dụng giúp bạn tùy chỉnh âm thanh mỗi khi cắm hoặc rú
 
 2.  **Cài đặt thư viện cần thiết**:
     ```bash
-    pip install customtkinter Pillow pywin32
+    pip install customtkinter Pillow pywin32 pystray
     ```
 
 3.  **Chạy ứng dụng**:
@@ -37,7 +37,14 @@ Một ứng dụng giúp bạn tùy chỉnh âm thanh mỗi khi cắm hoặc rú
 Để tạo file `.exe` duy nhất để sử dụng mà không cần cài đặt Python, sử dụng PyInstaller:
 
 ```powershell
-pyinstaller --noconfirm --onefile --windowed --name "ChargerSound" --collect-all customtkinter charger-sound.py
+# Cách 1: Sử dụng script có sẵn (Khuyên dùng)
+./build.ps1
+
+# Cách 2: Sử dụng file .spec (Nếu đã có)
+pyinstaller ChargerSound.spec
+
+# Cách 3: Chạy lệnh trực tiếp
+pyinstaller --noconfirm --onefile --windowed --name "ChargerSound" --icon "icon.png" --add-data "icon.png;." --collect-all customtkinter --collect-all pystray charger-sound.py
 ```
 
 **Lưu ý sau khi Build:**
