@@ -7,10 +7,12 @@ import winsound
 import json
 import os
 import sys
+import ctypes
 from tkinter import filedialog
 import winreg
 import webbrowser
 from PIL import Image, ImageDraw, ImageFont, ImageTk
+
 try:
     import pystray
     from pystray import MenuItem as item
@@ -213,12 +215,12 @@ class ChargeSoundApp(ctk.CTk):
         super().__init__()
         self.tray_icon = None
         
-        # UI Elements dictionary for easy text update
+        # UI Elements dictionary
         self.ui_elements = {}
         
         self.setup_ui()
-        self.set_icon("🔋")
         self.update_translations()
+        self.setup_tray()
 
         # Xử lý đóng cửa sổ và khởi động thu nhỏ
         self.protocol("WM_DELETE_WINDOW", self.hide_window)
@@ -226,50 +228,45 @@ class ChargeSoundApp(ctk.CTk):
             self.after(150, self.withdraw)
 
     def get_icon_image(self, emoji):
-        # Kiểm tra đường dẫn icon khi chạy file .exe (thư mục tạm của PyInstaller)
-        bundle_dir = getattr(sys, '_MEIPASS', BASE_DIR)
-        icon_path = os.path.join(bundle_dir, "icon.png")
+        search_paths = []
+        if getattr(sys, 'frozen', False):
+            search_paths.append(os.path.join(getattr(sys, '_MEIPASS', ''), "icon.png"))
         
-        # Nếu không thấy ở thư mục tạm, tìm ở thư mục chứa file .exe
-        if not os.path.exists(icon_path):
-            icon_path = os.path.join(BASE_DIR, "icon.png")
+        try:
+            current_script_dir = os.path.dirname(os.path.realpath(__file__))
+            search_paths.append(os.path.join(current_script_dir, "icon.png"))
+        except:
+            pass
+            
+        search_paths.append(os.path.join(BASE_DIR, "icon.png"))
+        search_paths.extend(["icon.png", "charger-sound.png"])
+        
+        icon_img = None
+        for path in search_paths:
+            if path and os.path.exists(path):
+                try:
+                    icon_img = Image.open(path)
+                    break
+                except Exception:
+                    continue
 
-        if os.path.exists(icon_path):
-            try:
-                return Image.open(icon_path).resize((64, 64))
-            except:
-                pass
+        if icon_img: return icon_img
                 
         try:
-            # Tạo icon với nền màu xanh (không để trong suốt để tránh bị "tàng hình")
             img = Image.new('RGBA', (64, 64), (59, 142, 208, 255))
             draw = ImageDraw.Draw(img)
             try:
                 font = ImageFont.truetype("seguiemj.ttf", 40)
             except:
                 font = ImageFont.load_default()
-            
-            # Vẽ emoji màu trắng lên nền xanh
             draw.text((32, 32), emoji, font=font, anchor="mm", fill="white")
             return img
         except:
             return Image.new('RGBA', (64, 64), (59, 142, 208, 255))
 
-    def set_icon(self, emoji):
-        try:
-            img = self.get_icon_image(emoji)
-            photo = ImageTk.PhotoImage(img)
-            self.iconphoto(True, photo)
-            self._icon_ref = photo
-        except Exception as e:
-            print(f"Icon error: {e}")
-
     def setup_tray(self):
-        if not HAS_PYSTRAY:
-            print("Pystray not found - Tray icon disabled")
-            return
+        if not HAS_PYSTRAY: return
             
-        print("Initializing Tray Icon...")
         def on_show(icon, item):
             self.show_window()
 
@@ -305,7 +302,7 @@ class ChargeSoundApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        # Top Bar for Language and Startup options
+        # Top Bar
         self.top_bar = ctk.CTkFrame(self, fg_color="transparent")
         self.top_bar.pack(fill="x", padx=20, pady=(10, 0))
 
@@ -361,27 +358,14 @@ class ChargeSoundApp(ctk.CTk):
         )
         self.header.pack(pady=(10, 20))
 
-        # Lấy danh sách tệp wav
+        # Wav files
         self.wav_files = get_wav_list()
         self.refresh_wav_list()
 
-        # Plugged setting
-        self.plugged_section = self.create_setting_section(
-            "plugged_sound", 
-            "plugged_enabled",
-            "#3498db"
-        )
-
-        # Space
+        # Sections
+        self.plugged_section = self.create_setting_section("plugged_sound", "plugged_enabled", "#3498db")
         ctk.CTkLabel(self.main_frame, text="", height=10).pack()
-
-        # Unplugged setting
-        self.unplugged_section = self.create_setting_section(
-            "unplugged_sound", 
-            "unplugged_enabled",
-            "#e67e22"
-        )
-        self.setup_tray()
+        self.unplugged_section = self.create_setting_section("unplugged_sound", "unplugged_enabled", "#e67e22")
 
     def open_github(self):
         webbrowser.open_new_tab("https://github.com/mhqb365/charger-sound")
@@ -398,27 +382,15 @@ class ChargeSoundApp(ctk.CTk):
     def update_translations(self):
         lang = settings["language"]
         t = TRANSLATIONS[lang]
-        
         self.title(t["window_title"])
         self.header.configure(text=t["header"])
         self.lang_btn.configure(text=t["lang_name"])
         self.about_btn.configure(text=t["about_name"])
         self.startup_cb.configure(text=t["startup_label"])
-        
-        # Update section titles & checkboxes
         self.plugged_section["title_label"].configure(text=t["plugged_title"])
         self.plugged_section["checkbox"].configure(text=t["enabled_label"])
-        
         self.unplugged_section["title_label"].configure(text=t["unplugged_title"])
         self.unplugged_section["checkbox"].configure(text=t["enabled_label"])
-        
-        # Update dropdowns if empty
-        if not get_wav_list():
-            new_vals = [t["empty_list"]]
-            self.plugged_section["menu"].configure(values=new_vals)
-            self.plugged_section["menu"].set(t["empty_list"])
-            self.unplugged_section["menu"].configure(values=new_vals)
-            self.unplugged_section["menu"].set(t["empty_list"])
 
     def toggle_language(self):
         new_lang = "vi" if settings["language"] == "en" else "en"
@@ -429,100 +401,54 @@ class ChargeSoundApp(ctk.CTk):
     def create_setting_section(self, key, enabled_key, accent_color):
         section_frame = ctk.CTkFrame(self.main_frame, fg_color="#1a1a1a", border_width=1, border_color="#333")
         section_frame.pack(fill="x", pady=5)
-
-        # Header row with title and checkbox
         header_row = ctk.CTkFrame(section_frame, fg_color="transparent")
         header_row.pack(fill="x", padx=15, pady=(12, 6))
-
-        title_label = ctk.CTkLabel(
-            header_row, 
-            text="...", 
-            font=("Inter", 15, "bold"),
-            text_color=accent_color
-        )
+        
+        title_label = ctk.CTkLabel(header_row, text="...", font=("Inter", 15, "bold"), text_color=accent_color)
         title_label.pack(side="left")
 
         def toggle_enabled():
             settings[enabled_key] = checkbox.get()
             save_settings(settings)
 
-        checkbox = ctk.CTkCheckBox(
-            header_row, 
-            text="...", 
-            width=20, 
-            checkbox_width=18, 
-            checkbox_height=18,
-            font=("Inter", 12),
-            command=toggle_enabled
-        )
-        if settings.get(enabled_key, True):
-            checkbox.select()
-        else:
-            checkbox.deselect()
+        checkbox = ctk.CTkCheckBox(header_row, text="...", width=20, checkbox_width=18, checkbox_height=18, font=("Inter", 12), command=toggle_enabled)
+        if settings.get(enabled_key, True): checkbox.select()
+        else: checkbox.deselect()
         checkbox.pack(side="right")
 
         controls_frame = ctk.CTkFrame(section_frame, fg_color="transparent")
         controls_frame.pack(fill="x", padx=15, pady=(0, 12))
 
-        # Xác định giá trị hiện tại (chỉ lấy tên file)
         current_val = settings[key]
         if os.path.isabs(current_val) or "/" in current_val or "\\" in current_val:
             current_val = os.path.basename(current_val)
         
-        lang = settings["language"]
         if current_val not in self.wav_files:
             if self.wav_files and not "Empty" in self.wav_files[0] and not "Trống" in self.wav_files[0]:
                 current_val = self.wav_files[0]
             else:
-                current_val = TRANSLATIONS[lang]["no_audio"]
+                current_val = TRANSLATIONS[settings["language"]]["no_audio"]
 
         def on_select(choice):
-            if any(x in choice for x in ["Empty", "Trống", "No", "Không"]):
-                return
+            if any(x in choice for x in ["Empty", "Trống", "No", "Không"]): return
             settings[key] = f"wav/{choice}"
             save_settings(settings)
 
-        option_menu = ctk.CTkOptionMenu(
-            controls_frame,
-            values=self.wav_files,
-            command=on_select,
-            width=300,
-            fg_color="#333",
-            button_color="#444",
-            button_hover_color="#555",
-            dropdown_hover_color="#3b8ed0"
-        )
+        option_menu = ctk.CTkOptionMenu(controls_frame, values=self.wav_files, command=on_select, width=300, fg_color="#333", button_color="#444")
         option_menu.set(current_val)
         option_menu.pack(side="left", padx=(0, 10))
 
         def test():
             selected = option_menu.get()
-            if any(x in selected for x in ["Empty", "Trống", "No", "Không"]):
-                return
+            if any(x in selected for x in ["Empty", "Trống", "No", "Không"]): return
             play_sound(f"wav/{selected}")
 
-        test_btn = ctk.CTkButton(
-            controls_frame, 
-            text="▶", 
-            width=38, 
-            height=32,
-            command=test,
-            fg_color=accent_color,
-            hover_color="#555"
-        )
+        test_btn = ctk.CTkButton(controls_frame, text="▶", width=38, height=32, command=test, fg_color=accent_color)
         test_btn.pack(side="right", padx=2)
 
-        return {
-            "title_label": title_label,
-            "checkbox": checkbox,
-            "menu": option_menu
-        }
+        return {"title_label": title_label, "checkbox": checkbox, "menu": option_menu}
 
 if __name__ == "__main__":
-    # Khởi chạy thread listener
-    thread = threading.Thread(target=start_power_listener, daemon=True)
-    thread.start()
-
-    # Chạy giao diện
+    threading.Thread(target=start_power_listener, daemon=True).start()
     app = ChargeSoundApp()
     app.mainloop()
