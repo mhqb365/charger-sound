@@ -12,6 +12,8 @@ from tkinter import filedialog
 import winreg
 import webbrowser
 from PIL import Image, ImageDraw, ImageFont, ImageTk
+import psutil
+
 
 try:
     import pystray
@@ -80,6 +82,7 @@ TRANSLATIONS = {
         "enabled_label": "Enable",
         "startup_label": "Run at Startup",
         "tray_show": "Show Window",
+        "tray_stats": "Show System Stats",
         "tray_exit": "Exit"
     },
     "vi": {
@@ -99,6 +102,7 @@ TRANSLATIONS = {
         "enabled_label": "Kích hoạt",
         "startup_label": "Khởi động cùng Windows",
         "tray_show": "Hiện cửa sổ",
+        "tray_stats": "Hiện thống kê hệ thống",
         "tray_exit": "Thoát"
     }
 }
@@ -109,7 +113,8 @@ def load_settings():
         "unplugged_sound": "wav/uhh.wav",
         "language": "en",
         "plugged_enabled": True,
-        "unplugged_enabled": True
+        "unplugged_enabled": True,
+        "show_stats": True
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -203,6 +208,95 @@ def start_power_listener():
     except Exception as e:
         print(f"Listener error: {e}")
 
+class StatsOverlay(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Stats")
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.attributes("-alpha", 0.7) # Độ mờ thanh thoát hơn (70%)
+        
+        self.configure(fg_color="#1e1e1e") # Nền tối sang trọng
+        
+        # UI Elements (Bỏ bo góc và viền)
+        self.container = ctk.CTkFrame(self, fg_color="#1e1e1e", corner_radius=0, border_width=0)
+        self.container.pack(fill="both", expand=True)
+        
+        self.label = ctk.CTkLabel(
+            self.container, 
+            text="Loading...", 
+            font=("Consolas", 12, "bold"),
+            text_color="#00ff00", # Màu xanh neon cho bắt mắt
+            justify="left"
+        )
+        self.label.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Dragging functionality
+        self.label.bind("<Button-1>", self.start_drag)
+        self.label.bind("<B1-Motion>", self.do_drag)
+        self.container.bind("<Button-1>", self.start_drag)
+        self.container.bind("<B1-Motion>", self.do_drag)
+        
+        # Position at bottom-right corner of screen
+        self.set_default_position()
+        self.force_topmost()
+        
+    def force_topmost(self):
+        try:
+            # Force window to be at the very top using Win32 API
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            # HWND_TOPMOST = -1, SWP_NOMOVE = 2, SWP_NOSIZE = 1, SWP_SHOWWINDOW = 0x40
+            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 2 | 1 | 0x40)
+        except:
+            pass
+
+    def start_drag(self, event):
+        self.x = event.x
+        self.y = event.y
+
+    def do_drag(self, event):
+        deltax = event.x - self.x
+        deltay = event.y - self.y
+        x = self.winfo_x() + deltax
+        y = self.winfo_y() + deltay
+        self.geometry(f"+{x}+{y}")
+
+    def set_default_position(self):
+        try:
+            # Tìm Handle của Taskbar để tính toán ranh giới
+            shell_hwnd = win32gui.FindWindow("Shell_TrayWnd", None)
+            taskbar_rect = win32gui.GetWindowRect(shell_hwnd)
+            
+            # Kích thước màn hình
+            screen_width = self.winfo_screenwidth()
+            
+            # Kích thước Widget
+            width = 240
+            height = 50
+            
+            # Toạ độ X: Góc bên phải
+            x = screen_width
+            
+            # Toạ độ Y: Nằm ngay TRÊN thanh Taskbar (taskbar_rect[1] là đỉnh của Taskbar)
+            y = taskbar_rect[1] - (height + 15)
+            
+            self.geometry(f"{width}x{height}+{x}+{y}")
+        except:
+            # Dự phòng
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            self.geometry(f"240x50+{sw-250}+{sh-100}")
+
+    def update_stats(self, text):
+        self.label.configure(text=text)
+        # Nhắc lại việc luôn nằm trên cùng mỗi khi cập nhật để không bị Taskbar đè
+        self.lift()
+        self.attributes("-topmost", True)
+
+
+
+
 def get_wav_list():
     wav_dir = os.path.join(BASE_DIR, "wav")
     if not os.path.exists(wav_dir):
@@ -220,14 +314,51 @@ class ChargeSoundApp(ctk.CTk):
         
         self.setup_ui()
         self.update_translations()
+        
+        # Khởi tạo Overlay trước tiên để tránh lỗi Race Condition
+        self.overlay = StatsOverlay(self)
+        if not settings.get("show_stats", True):
+            self.overlay.withdraw()
+            
         self.setup_tray()
+
+
 
         # Xử lý đóng cửa sổ và khởi động thu nhỏ
         self.protocol("WM_DELETE_WINDOW", self.hide_window)
         if "--minimized" in sys.argv:
             self.after(150, self.withdraw)
 
-    def get_icon_image(self, emoji):
+    def get_icon_image(self, emoji, stats=None):
+        # Nếu có thông số stats, vẽ icon động
+        if stats:
+            cpu, ram, disk, up, down = stats
+            img = Image.new('RGBA', (64, 64), (30, 30, 30, 255))
+            draw = ImageDraw.Draw(img)
+            
+            # Vẽ background bars
+            draw.rectangle([0, 0, 64, 64], outline=(60, 60, 60), width=1)
+            
+            # Chọn font (ưu tiên font hệ thống nhỏ)
+            try:
+                font = ImageFont.truetype("arial.ttf", 22)
+                font_small = ImageFont.truetype("arial.ttf", 18)
+            except:
+                font = ImageFont.load_default()
+                font_small = font
+
+            # Vẽ CPU và RAM (2 thông số quan trọng nhất trên icon)
+            # Chia làm 2 hàng
+            draw.text((32, 16), f"C:{int(cpu)}", fill="#3b8ed0", font=font, anchor="mm")
+            draw.text((32, 45), f"R:{int(ram)}", fill="#e67e22", font=font, anchor="mm")
+            
+            # Thêm vạch báo Disk ở cạnh trái
+            disk_h = int((disk / 100) * 64)
+            draw.rectangle([0, 64-disk_h, 4, 64], fill="#2ecc71")
+            
+            return img
+
+        # Icon mặc định (từ file hoặc emoji)
         search_paths = []
         if getattr(sys, 'frozen', False):
             search_paths.append(os.path.join(getattr(sys, '_MEIPASS', ''), "icon.png"))
@@ -264,17 +395,89 @@ class ChargeSoundApp(ctk.CTk):
         except:
             return Image.new('RGBA', (64, 64), (59, 142, 208, 255))
 
+    def format_speed(self, b_per_s):
+        if b_per_s < 1024: return f"{b_per_s:.0f}B/s"
+        if b_per_s < 1024*1024: return f"{b_per_s/1024:.1f}K/s"
+        return f"{b_per_s/(1024*1024):.1f}M/s"
+
+    def start_stats_monitor(self):
+        last_net_io = psutil.net_io_counters()
+        last_time = time.time()
+
+        def stats_loop():
+            nonlocal last_net_io, last_time
+            while True:
+                if self.tray_icon:
+                    try:
+                        # Lấy thông số
+                        cpu = psutil.cpu_percent(interval=None)
+                        ram = psutil.virtual_memory().percent
+                        disk = psutil.disk_usage('/').percent
+                        
+                        # Tính tốc độ mạng
+                        now = time.time()
+                        net_io = psutil.net_io_counters()
+                        dt = now - last_time
+                        up_speed = (net_io.bytes_sent - last_net_io.bytes_sent) / dt
+                        down_speed = (net_io.bytes_recv - last_net_io.bytes_recv) / dt
+                        
+                        last_net_io = net_io
+                        last_time = now
+
+                        # Cập nhật Tooltip
+                        status_text = (
+                            f"CPU: {cpu}% | RAM: {ram}% | Disk: {disk}%\n"
+                            f"↑ {self.format_speed(up_speed)} | ↓ {self.format_speed(down_speed)}"
+                        )
+                        self.tray_icon.title = status_text
+                        
+                        # Cập nhật Overlay (Taskbar Widget)
+                        if settings.get("show_stats", True):
+                            overlay_text = (
+                                f"CPU:{int(cpu)}% | RAM:{int(ram)}% | Disk:{int(disk)}%\n"
+                                f"Up:{self.format_speed(up_speed)} | Down:{self.format_speed(down_speed)}"
+                            )
+                            self.overlay.update_stats(overlay_text)
+                        
+                        # Cập nhật Icon (vẽ thông số)
+                        self.tray_icon.image = self.get_icon_image("🔋", stats=(cpu, ram, disk, up_speed, down_speed))
+
+                        
+                    except Exception as e:
+                        print(f"Stats Error: {e}")
+                
+                time.sleep(2)
+
+        threading.Thread(target=stats_loop, daemon=True).start()
+
+
     def setup_tray(self):
         if not HAS_PYSTRAY: return
             
         def on_show(icon, item):
             self.show_window()
 
+        def on_toggle_stats(icon, item):
+            new_state = not settings.get("show_stats", True)
+            settings["show_stats"] = new_state
+            save_settings(settings)
+            if new_state:
+                self.overlay.deiconify()
+                self.overlay.lift()
+                self.overlay.force_topmost()
+            else:
+                self.overlay.withdraw()
+
         def on_exit(icon, item):
             self.quit_app()
 
         menu = pystray.Menu(
             item(lambda t: TRANSLATIONS[settings["language"]]["tray_show"], on_show, default=True),
+            item(
+                lambda t: TRANSLATIONS[settings["language"]]["tray_stats"], 
+                on_toggle_stats,
+                checked=lambda item: settings.get("show_stats", True)
+            ),
             item(lambda t: TRANSLATIONS[settings["language"]]["about_name"], lambda: self.open_github()),
             pystray.Menu.SEPARATOR,
             item(lambda t: TRANSLATIONS[settings["language"]]["tray_exit"], on_exit)
@@ -282,6 +485,10 @@ class ChargeSoundApp(ctk.CTk):
         
         self.tray_icon = pystray.Icon("ChargerSound", self.get_icon_image("🔋"), "Charger Sound", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        
+        # Bắt đầu luồng giám sát hệ thống
+        self.start_stats_monitor()
+
 
     def hide_window(self):
         self.withdraw()
